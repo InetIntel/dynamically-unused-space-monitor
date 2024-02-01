@@ -1,3 +1,37 @@
+// This software is Copyright (c) 2024 Georgia Tech Research Corporation. All
+// Rights Reserved. Permission to copy, modify, and distribute this software and
+// its documentation for academic research and education purposes, without fee,
+// and without a written agreement is hereby granted, provided that the above
+// copyright notice, this paragraph and the following three paragraphs appear in
+// all copies. Permission to make use of this software for other than academic
+// research and education purposes may be obtained by contacting:
+//
+//  Office of Technology Licensing
+//  Georgia Institute of Technology
+//  926 Dalney Street, NW
+//  Atlanta, GA 30318
+//  404.385.8066
+//  techlicensing@gtrc.gatech.edu
+//
+// This software program and documentation are copyrighted by Georgia Tech
+// Research Corporation (GTRC). The software program and documentation are 
+// supplied "as is", without any accompanying services from GTRC. GTRC does
+// not warrant that the operation of the program will be uninterrupted or
+// error-free. The end-user understands that the program was developed for
+// research purposes and is advised not to rely exclusively on the program for
+// any reason.
+//
+// IN NO EVENT SHALL GEORGIA TECH RESEARCH CORPORATION BE LIABLE TO ANY PARTY FOR
+// DIRECT, INDIRECT, SPECIAL, INCIDENTAL, OR CONSEQUENTIAL DAMAGES, INCLUDING
+// LOST PROFITS, ARISING OUT OF THE USE OF THIS SOFTWARE AND ITS DOCUMENTATION,
+// EVEN IF GEORGIA TECH RESEARCH CORPORATION HAS BEEN ADVISED OF THE POSSIBILITY
+// OF SUCH DAMAGE. GEORGIA TECH RESEARCH CORPORATION SPECIFICALLY DISCLAIMS ANY
+// WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+// MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE. THE SOFTWARE PROVIDED
+// HEREUNDER IS ON AN "AS IS" BASIS, AND  GEORGIA TECH RESEARCH CORPORATION HAS
+// NO OBLIGATIONS TO PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS, OR
+// MODIFICATIONS.
+
 #include <core.p4>
 #include <v1model.p4>
 
@@ -5,18 +39,6 @@
 #include "include/parsers.p4"
 #include "include/constants.p4"
 
-
-/*************************************************************************
-************   C H E C K S U M    V E R I F I C A T I O N   *************
-*************************************************************************/
-
-control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
-    apply {  }
-}
-
-/*************************************************************************
-**************  I N G R E S S   P R O C E S S I N G   *******************
-*************************************************************************/
 
 control MyIngress(inout headers hdr,
                   inout metadata meta,
@@ -99,7 +121,6 @@ control MyIngress(inout headers hdr,
     }
 
     apply {
-        // Two variables to account for future cases of packets that cant be classified (packets from the logging machine, etc).
         meta.incoming = 0;
         meta.outgoing = 0;
         // Whether to forward the packet or not
@@ -157,6 +178,7 @@ control MyIngress(inout headers hdr,
 
                         if (d_value < (bit<16>)COUNTER_THRESHOLD){
                             //meta.egress_spec = LOG_PORT;
+                            clone3(CloneType.I2E, 200, meta);
                         }
                         else{
                             if ((d_value & (bit<16>)(RATE_LIMIT-1)) == (bit<16>)0){ // mod RATE_LIMIT
@@ -177,10 +199,6 @@ control MyIngress(inout headers hdr,
         }
     }
 }
-
-/*************************************************************************
-****************  E G R E S S   P R O C E S S I N G   *******************
-*************************************************************************/
 
 control MyEgress(inout headers hdr,
                  inout metadata meta,
@@ -245,10 +263,6 @@ control MyComputeChecksum(inout headers hdr, inout metadata meta) {
             HashAlgorithm.csum16);
     }
 }
-
-/*************************************************************************
-***********************  S W I T C H  *******************************
-*************************************************************************/
 
 //switch architecture
 V1Switch(
