@@ -163,7 +163,7 @@ control Ingress(
     read_update_dark_table = {
         void apply(inout bit<16> value, out bit<16> rv) {
             rv = value;
-            if (value == 2047) { //kept the same logic but we can reconsider the threshold value now
+            if (value == 2047) { 
                 value = COUNTER_THRESHOLD;
             }
             else {
@@ -225,8 +225,8 @@ control Ingress(
                     }
                     else if (meta.notify == 1){
                         meta.mirror_header_type = HEADER_CONTROL;         
-                        ig_dprsr_md.mirror_type = 1; // have to notify others create extra pkt to multicast; control plane will define out port to be 
-                        meta.mirror_session = (MirrorId_t) 1; // can also be a constant.
+                        ig_dprsr_md.mirror_type = 1; 
+                        meta.mirror_session = (MirrorId_t) 1;
                     }
                 }
                 else if (meta.incoming == 1) {
@@ -237,7 +237,7 @@ control Ingress(
 
                     if (g_value == 0 && t_value == 0){
                         bit<16> d_value;
-                        bit<32> dstIP = hdr.ipv4.dst_addr >> 8; // Need to decide if the value is going to be 32 bits or 24 (design decision).
+                        bit<32> dstIP = hdr.ipv4.dst_addr; // >> 8; // configurable
                         bit<10> h_idx;
                         h_idx = hash_0.get({dstIP});
                         d_value = read_update_dark_table.execute(h_idx);

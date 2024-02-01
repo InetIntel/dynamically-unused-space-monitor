@@ -156,7 +156,7 @@ control MyIngress(inout headers hdr,
                     flag_table.read(f_value, (bit<32>)meta.idx);
 
                     if (g_value == (bit<1>)0 && f_value == (bit<1>)0){
-                        bit<32> dstIP = hdr.ipv4.dstAddr>>8; //configurable
+                        bit<32> dstIP = hdr.ipv4.dstAddr; // >>8; //configurable
                         bit<10> h_idx;
                         hash(h_idx,
                             HashAlgorithm.crc16,

@@ -284,7 +284,7 @@ control Ingress(
 
                     if (g_value == 0 && t_value == 0){
                         bit<16> d_value;
-                        bit<32> dstIP = hdr.ipv4.dst_addr >> 8;
+                        bit<32> dstIP = hdr.ipv4.dst_addr; // >> 8; // configurable
                         bit<10> h_idx;
 
                         h_idx = hash_0.get({dstIP});
