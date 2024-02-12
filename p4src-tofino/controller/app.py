@@ -114,8 +114,8 @@ if __name__ == '__main__':
     parser.add_argument('--dark-table-size', default=1024, type=int)
     parser.add_argument('--alpha', default=1, type=int)
     parser.add_argument('--monitored', default='../input_files/monitored.txt', type=str)
-    parser.add_argument('--outgoing', action='append', default=[1], type=int)
-    parser.add_argument('--incoming', action='append', default=[2], type=int)
+    parser.add_argument('--outgoing', nargs='*', default=[1], type=int)
+    parser.add_argument('--incoming', nargs='*', default=[2], type=int)
 
     args = parser.parse_args()
 

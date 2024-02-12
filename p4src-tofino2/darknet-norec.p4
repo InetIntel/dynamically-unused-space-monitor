@@ -407,10 +407,10 @@ control Egress(
         }
         actions = {
             set_nhop_r;
-            @defaultonly drop_exit_egress;
+            @defaultonly NoAction;
         }
         size = 1024;
-        default_action = drop_exit_egress();
+        default_action = NoAction();
     }
 
     apply {

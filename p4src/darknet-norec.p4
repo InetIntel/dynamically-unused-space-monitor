@@ -218,10 +218,10 @@ control MyEgress(inout headers hdr,
         }
         actions = {
             set_nhop_r;
-            drop;
+            NoAction;
         }
         size = 1024;
-        default_action = drop;
+        default_action = NoAction;
     }
 
     apply {

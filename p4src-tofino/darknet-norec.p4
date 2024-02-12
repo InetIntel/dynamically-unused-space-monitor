@@ -224,9 +224,12 @@ control Ingress(
                         drop_exit_ingress(); // dont flood the network
                     }
                     else if (meta.notify == 1){
-                        meta.mirror_header_type = HEADER_CONTROL;         
+                        meta.mirror_header_type = HEADER_CONTROL;
                         ig_dprsr_md.mirror_type = 1; 
-                        meta.mirror_session = (MirrorId_t) 1;
+                        meta.mirror_session = (MirrorId_t) ig_intr_md.ingress_port[8:7];
+                        @in_hash{
+                            meta.mirror_session = meta.mirror_session + (MirrorId_t) 1;
+                        }
                     }
                 }
                 else if (meta.incoming == 1) {
@@ -245,14 +248,14 @@ control Ingress(
                         if (d_value < (bit<16>) COUNTER_THRESHOLD){
                             meta.mirror_header_type = HEADER_MIRROR;
                             ig_dprsr_md.mirror_type = 2; // mirror pkt to be logged
-                            meta.mirror_session = (MirrorId_t) 2;
+                            meta.mirror_session = (MirrorId_t) 3;
                             // set_port((PortId_t) LOG_PORT); // ASSUME WE HAVE CONNECTED A MACHINE TO LOG THESE PKTS
                         }
                         else{
                             if ((d_value & (bit<16>)(RATE_LIMIT-1)) == 0){ // mod RATE_LIMIT
                                 meta.mirror_header_type = HEADER_MIRROR;
                                 ig_dprsr_md.mirror_type = 2; // mirror pkt to be logged
-                                meta.mirror_session = (MirrorId_t) 2;
+                                meta.mirror_session = (MirrorId_t) 3;
                                 // set_port((PortId_t) LOG_PORT);                                    
                             }
                             else {
@@ -350,10 +353,10 @@ control Egress(
         }
         actions = {
             set_nhop_r;
-            @defaultonly drop_exit_egress;
+            @defaultonly NoAction;
         }
         size = 1024;
-        default_action = drop_exit_egress();
+        default_action = NoAction();
     }
 
     apply {
