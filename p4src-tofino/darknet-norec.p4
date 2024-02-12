@@ -226,10 +226,7 @@ control Ingress(
                     else if (meta.notify == 1){
                         meta.mirror_header_type = HEADER_CONTROL;
                         ig_dprsr_md.mirror_type = 1; 
-                        meta.mirror_session = (MirrorId_t) ig_intr_md.ingress_port[8:7];
-                        @in_hash{
-                            meta.mirror_session = meta.mirror_session + (MirrorId_t) 1;
-                        }
+                        meta.mirror_session = (MirrorId_t) 1;
                     }
                 }
                 else if (meta.incoming == 1) {

@@ -52,6 +52,7 @@ LOG_PORT = 6
 # LOG_PORT = 140 # 2
 THRESHOLD = 1024
 RECIRCULATE_PORT = 68
+NUM_PIPES = 2
 
 import bfrt_grpc.client as gc
 from tabulate import tabulate
@@ -108,6 +109,7 @@ class LocalClient:
         monitored_prefixes = self.parse_monitored(self.monitored_path)   # populate monitored table
         self.populate_monitored(monitored_prefixes)
         self.add_ports(self.ports)
+
     def add_ports(self, ports):
         for port in ports['incoming']:
             _keys = self.ports_table.make_key([gc.KeyTuple('ig_intr_md.ingress_port', port)])
@@ -157,27 +159,38 @@ class LocalClient:
         mirror_table = self.bfrt_info.table_get('$mirror.cfg')
         pre_node_table = self.bfrt_info.table_get('$pre.node')
         pre_mgid_table = self.bfrt_info.table_get('$pre.mgid')
-        rec_ports = [128+RECIRCULATE_PORT, RECIRCULATE_PORT]
+        rec_ports = [RECIRCULATE_PORT + 128*x for x in range(NUM_PIPES)]
 
         rid = 1
-        num_pipes = 2
-        for pipe in range(num_pipes):
-            init_rid = rid
-            # multicast nodes
-            for port in eg_ports:
-                for i in range(3):
-                    l1_node_key = pre_node_table.make_key([gc.KeyTuple('$MULTICAST_NODE_ID', rid)])
-                    l2_node = pre_node_table.make_data([
-                        gc.DataTuple('$MULTICAST_RID', rid),
-                        gc.DataTuple('$DEV_PORT', int_arr_val=[port])
-                    ])
-                    rid += 1
-                    try:
-                        pre_node_table.entry_add(self.dev_tgt, [l1_node_key], [l2_node])   
-                    except:
-                        pass
+        # multicast nodes
+        for port in eg_ports:
+            for _ in range(3):
+                l1_node_key = pre_node_table.make_key([gc.KeyTuple('$MULTICAST_NODE_ID', rid)])
+                l2_node = pre_node_table.make_data([
+                    gc.DataTuple('$MULTICAST_RID', rid),
+                    gc.DataTuple('$DEV_PORT', int_arr_val=[port])
+                ])
+                rid += 1
+                try:
+                    pre_node_table.entry_add(self.dev_tgt, [l1_node_key], [l2_node])   
+                except:
+                    pass
         
-            port = rec_ports[pipe]
+        # multicast group
+        mg_id_key = pre_mgid_table.make_key([gc.KeyTuple('$MGID', 1)])
+        mg_id_data = pre_mgid_table.make_data([
+            gc.DataTuple('$MULTICAST_NODE_ID', int_arr_val=list(range(1, rid))),
+            gc.DataTuple('$MULTICAST_NODE_L1_XID_VALID', bool_arr_val=[False]*(rid-1)),
+            gc.DataTuple('$MULTICAST_NODE_L1_XID', int_arr_val=[0]*(rid-1)),
+        ])
+        try:
+            pre_mgid_table.entry_add(self.dev_tgt, [mg_id_key], [mg_id_data])
+        except:
+            pass
+
+        init_rid = rid
+        # recirculation nodes
+        for port in rec_ports:
             l1_node_key = pre_node_table.make_key([gc.KeyTuple('$MULTICAST_NODE_ID', rid)])
             l2_node = pre_node_table.make_data([
                 gc.DataTuple('$MULTICAST_RID', rid),
@@ -188,33 +201,35 @@ class LocalClient:
                 pre_node_table.entry_add(self.dev_tgt, [l1_node_key], [l2_node])   
             except:
                 pass
+        
+        # multicast group
+        mg_id_key = pre_mgid_table.make_key([gc.KeyTuple('$MGID', 2)])
+        mg_id_data = pre_mgid_table.make_data([
+            gc.DataTuple('$MULTICAST_NODE_ID', int_arr_val=list(range(init_rid, rid))),
+            gc.DataTuple('$MULTICAST_NODE_L1_XID_VALID', bool_arr_val=[False]*(rid-init_rid)),
+            gc.DataTuple('$MULTICAST_NODE_L1_XID', int_arr_val=[0]*(rid-init_rid)),
+        ])
+        try:
+            pre_mgid_table.entry_add(self.dev_tgt, [mg_id_key], [mg_id_data])
+        except:
+            pass
 
-            # multicast group
-            mg_id_key = pre_mgid_table.make_key([gc.KeyTuple('$MGID', 1+ pipe)])
-            mg_id_data = pre_mgid_table.make_data([
-                gc.DataTuple('$MULTICAST_NODE_ID', int_arr_val=list(range(init_rid, rid))),
-                gc.DataTuple('$MULTICAST_NODE_L1_XID_VALID', bool_arr_val=[False]*(rid-init_rid)),
-                gc.DataTuple('$MULTICAST_NODE_L1_XID', int_arr_val=[0]*(rid-init_rid)),
-            ])
-            try:
-                pre_mgid_table.entry_add(self.dev_tgt, [mg_id_key], [mg_id_data])
-            except:
-                pass
+        mirror_key  = mirror_table.make_key([gc.KeyTuple('$sid', mc_session_id)])
+        mirror_data = mirror_table.make_data([
+            gc.DataTuple('$direction', str_val="BOTH"),
+            gc.DataTuple('$session_enable', bool_val=True),
+            gc.DataTuple('$mcast_rid', 1),
+            gc.DataTuple('$mcast_grp_a', 1),
+            gc.DataTuple('$mcast_grp_a_valid', bool_val=True),
+            gc.DataTuple('$mcast_grp_b', 2),
+            gc.DataTuple('$mcast_grp_b_valid', bool_val=True),
+            gc.DataTuple('$max_pkt_len', 39)
+        ], "$normal")
 
-            mirror_key  = mirror_table.make_key([gc.KeyTuple('$sid', mc_session_id + pipe)])
-            mirror_data = mirror_table.make_data([
-                gc.DataTuple('$direction', str_val="BOTH"),
-                gc.DataTuple('$session_enable', bool_val=True),
-                gc.DataTuple('$mcast_grp_a', 1 + pipe),
-                gc.DataTuple('$mcast_grp_a_valid', bool_val=True),
-                gc.DataTuple('$mcast_rid', 1 + pipe),
-                gc.DataTuple('$max_pkt_len', 39)
-            ], "$normal")
-
-            try:
-                mirror_table.entry_add(self.dev_tgt, [mirror_key], [mirror_data])
-            except:
-                pass
+        try:
+            mirror_table.entry_add(self.dev_tgt, [mirror_key], [mirror_data])
+        except:
+            pass
 
         mirror_key  = mirror_table.make_key([gc.KeyTuple('$sid', log_session_id)])
         mirror_data = mirror_table.make_data([
