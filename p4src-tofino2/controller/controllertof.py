@@ -51,6 +51,8 @@ sys.path.append(os.path.join(SDE_PYTHON3, 'tofino', 'bfrt_grpc'))
 LOG_PORT = 13
 # LOG_PORT = 140 # 2
 THRESHOLD = 1024
+RECIRCULATE_PORT = 6
+NUM_PIPES = 2
 
 # Here is the most important module
 import bfrt_grpc.client as gc
@@ -80,7 +82,7 @@ class LocalClient:
             for line in f:
                 if line.startswith('#'):
                     continue
-                monitored_prefixes.append(line)
+                monitored_prefixes.append(line[:-1])
         return monitored_prefixes
 
     def _setup(self):
@@ -161,11 +163,13 @@ class LocalClient:
         mirror_table = self.bfrt_info.table_get('$mirror.cfg')
         pre_node_table = self.bfrt_info.table_get('$pre.node')
         pre_mgid_table = self.bfrt_info.table_get('$pre.mgid')
+        rec_ports = [RECIRCULATE_PORT + 128*x for x in range(NUM_PIPES)]
 
         rid = 1
+        
         # multicast nodes
         for port in eg_ports:
-            for i in range(3):
+            for _ in range(3):
                 l1_node_key = pre_node_table.make_key([gc.KeyTuple('$MULTICAST_NODE_ID', rid)])
                 l2_node = pre_node_table.make_data([
                     gc.DataTuple('$MULTICAST_RID', rid),
@@ -176,6 +180,7 @@ class LocalClient:
                     pre_node_table.entry_add(self.dev_tgt, [l1_node_key], [l2_node])   
                 except:
                     pass
+
         # multicast group
         mg_id_key = pre_mgid_table.make_key([gc.KeyTuple('$MGID', 1)])
         
@@ -190,21 +195,47 @@ class LocalClient:
         except:
             pass
 
+        init_rid = rid
+        # recirculation nodes
+        for port in rec_ports:
+            l1_node_key = pre_node_table.make_key([gc.KeyTuple('$MULTICAST_NODE_ID', rid)])
+            l2_node = pre_node_table.make_data([
+                gc.DataTuple('$MULTICAST_RID', rid),
+                gc.DataTuple('$DEV_PORT', int_arr_val=[port])
+            ])
+            rid += 1
+            try:
+                pre_node_table.entry_add(self.dev_tgt, [l1_node_key], [l2_node])   
+            except:
+                pass
+
+        # multicast group
+        mg_id_key = pre_mgid_table.make_key([gc.KeyTuple('$MGID', 2)])
+        mg_id_data = pre_mgid_table.make_data([
+            gc.DataTuple('$MULTICAST_NODE_ID', int_arr_val=list(range(init_rid, rid))),
+            gc.DataTuple('$MULTICAST_NODE_L1_XID_VALID', bool_arr_val=[False]*(rid-init_rid)),
+            gc.DataTuple('$MULTICAST_NODE_L1_XID', int_arr_val=[0]*(rid-init_rid)),
+        ])
+        try:
+            pre_mgid_table.entry_add(self.dev_tgt, [mg_id_key], [mg_id_data])
+        except:
+            pass
+
         mirror_key  = mirror_table.make_key([gc.KeyTuple('$sid', mc_session_id)])
         mirror_data = mirror_table.make_data([
             gc.DataTuple('$direction', str_val="BOTH"),
             gc.DataTuple('$session_enable', bool_val=True),
+            gc.DataTuple('$mcast_rid', 1),
             gc.DataTuple('$mcast_grp_a', 1),
             gc.DataTuple('$mcast_grp_a_valid', bool_val=True),
-            gc.DataTuple('$mcast_rid', 1),  
-            gc.DataTuple('$max_pkt_len', 39)
+            gc.DataTuple('$mcast_grp_b', 2),
+            gc.DataTuple('$mcast_grp_b_valid', bool_val=True),
+            gc.DataTuple('$max_pkt_len', 40)
         ], "$normal")
-
         try:
             mirror_table.entry_add(self.dev_tgt, [mirror_key], [mirror_data])
         except:
-            pass
-        
+            pass  
 
         mirror_key  = mirror_table.make_key([gc.KeyTuple('$sid', log_session_id)])
         mirror_data = mirror_table.make_data([
@@ -329,8 +360,8 @@ if __name__ == "__main__":
     parser.add_argument('--alpha', default=1, type=int)
     parser.add_argument('-s', '--setup', default=True, type=bool)
     parser.add_argument('--monitored', default='../input_files/monitored.txt', type=str)
-    parser.add_argument('--outgoing', nargs='*', default=[1], type=int)
-    parser.add_argument('--incoming', nargs='*', default=[2], type=int)
+    parser.add_argument('--outgoing', nargs='*', default=[9], type=int)
+    parser.add_argument('--incoming', nargs='*', default=[8], type=int)
 
     args = parser.parse_args()
 
