@@ -118,8 +118,8 @@ if __name__ == '__main__':
     parser.add_argument('--alpha', default=1, type=int)
     parser.add_argument('-s', '--setup', default=True, type=bool)
     parser.add_argument('--monitored', default='../input_files/monitored.txt', type=str)
-    parser.add_argument('--outgoing', nargs='*', default=[1], type=int)
-    parser.add_argument('--incoming', nargs='*', default=[2], type=int)
+    parser.add_argument('--outgoing', nargs='*', default=[9], type=int)
+    parser.add_argument('--incoming', nargs='*', default=[8], type=int)
 
     args = parser.parse_args()
 
