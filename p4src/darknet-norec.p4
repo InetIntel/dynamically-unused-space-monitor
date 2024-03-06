@@ -48,9 +48,11 @@ control MyIngress(inout headers hdr,
     register<bit<1>>(GLOBAL_TABLE_ENTRIES) flag_table;
     bit<1> g_value;
     bit<1> f_value;
-    
-    register<bit<16>>(DARK_TABLE_ENTRIES) dark_table;
-    bit<16> d_value;
+    bit<2> global_color;
+    bit<2> color;
+
+    meter((bit<32>) 1, MeterType.packets) dark_global_meter;
+    meter((bit<32>) DARK_TABLE_ENTRIES, MeterType.packets) dark_meter;
 
     action drop() {
         mark_to_drop(standard_metadata);
@@ -63,7 +65,7 @@ control MyIngress(inout headers hdr,
         hdr.ipv4.ttl = hdr.ipv4.ttl - 1;
     }
 
-    action calc_idx(bit<GLOBAL_TABLE_INDEX_WIDTH> base_idx, bit<6> pfx_len) {
+    action calc_idx(bit<GLOBAL_TABLE_INDEX_WIDTH> base_idx, bit<6> pfx_len, bit<DARK_TABLE_INDEX_WIDTH> dark_idx) {
         bit<32> mask = 0xffffffff;
         mask = mask << ((bit<6>)32 - pfx_len);
         mask = ~mask;
@@ -71,6 +73,7 @@ control MyIngress(inout headers hdr,
         bit<32> offset = meta.addr & mask;
         //offset = offset >> 8; // change according to granularity
         meta.idx = base_idx + (bit<GLOBAL_TABLE_INDEX_WIDTH>) offset;
+        meta.dark_idx = dark_idx + (bit<DARK_TABLE_INDEX_WIDTH>) (offset >> 8);
     }
 
     table ipv4_lpm {
@@ -156,38 +159,11 @@ control MyIngress(inout headers hdr,
                     flag_table.read(f_value, (bit<32>)meta.idx);
 
                     if (g_value == (bit<1>)0 && f_value == (bit<1>)0){
-                        bit<32> dstIP = hdr.ipv4.dstAddr; // >>8; //configurable
-                        bit<10> h_idx;
-                        hash(h_idx,
-                            HashAlgorithm.crc16,
-                            (bit<10>)0,
-                            {dstIP},
-                            (bit<11>)DARK_TABLE_ENTRIES);
-                        // meta.ignore = (bit<1>)1; // up to operators to drop or forward
-                        @atomic{
-                            dark_table.read(d_value, (bit<32>)h_idx);
-                            
-                            if (d_value == (bit<16>)2047){
-                                dark_table.write((bit<32>)h_idx, (bit<16>)COUNTER_THRESHOLD);
-                            }
-                            else{
-                                dark_table.write((bit<32>)h_idx, (bit<16>)(d_value + (bit<16>)1));
-                            }
-                            
-                        }
+                        dark_global_meter.execute_meter<bit<2>>((bit<32>)0, global_color);
+                        dark_meter.execute_meter<bit<2>>((bit<32>)meta.dark_idx, color);
 
-                        if (d_value < (bit<16>)COUNTER_THRESHOLD){
-                            //meta.egress_spec = LOG_PORT;
+                        if (global_color == (bit<2>)0 && color == (bit<2>)0){
                             clone3(CloneType.I2E, 200, meta);
-                        }
-                        else{
-                            if ((d_value & (bit<16>)(RATE_LIMIT-1)) == (bit<16>)0){ // mod RATE_LIMIT
-                                //meta.egress_spec = LOG_PORT;
-                        .       clone3(CloneType.I2E, 200, meta);
-                            }
-                            else{
-                                //drop();
-                            }
                         }
                     }
                 }

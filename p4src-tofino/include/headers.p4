@@ -84,6 +84,7 @@ header normal_h {
 struct my_ingress_metadata_t {
     ipv4_addr_t addr;
     bit<22> idx;
+    bit<14> dark_idx;
     bit<22> offset;
     bit<1> incoming;
     bit<1> outgoing;

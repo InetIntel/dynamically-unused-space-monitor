@@ -41,6 +41,7 @@ import time
 import ipaddress
 from aggregate6 import aggregate
 import logging
+import math
 
 logging.basicConfig(level="DEBUG",
                         format="%(asctime)s|%(levelname)s: %(message)s",
@@ -50,23 +51,36 @@ THRESHOLD = 1024
 
 
 class LocalClient:
-    def __init__(self, time_interval, global_table_size, dark_table_size, alpha, monitored_path, ports):
+    def __init__(self, time_interval, global_table_size, dark_meter_size, alpha, monitored_path, ports,\
+                max_pkt_rate, max_byte_rate, avg_pkt_rate, avg_byte_rate):
         self.time_interval = time_interval*60
         self.global_table_size = global_table_size
-        self.dark_table_size = dark_table_size
+        self.dark_meter_size = dark_meter_size
         self.alpha = alpha
         self.counters = [self.alpha]*self.global_table_size
         self.monitored_path = monitored_path
         self.index_prefix_mapping = []
         self.prefix_index_mapping = Radix()
+        self.dark_prefix_index_mapping = dict()
         self.ports = ports
+
+        self.max_pkt_rate = max_pkt_rate
+        self.max_byte_rate = max_byte_rate
+        self.avg_pkt_rate = avg_pkt_rate
+        self.avg_byte_rate = avg_byte_rate
+        # max pkt rate per address
+        self.max_pkt_rate_addr = round(self.max_pkt_rate / self.global_table_size, 3)
+        self.max_byte_rate_addr = round(self.max_byte_rate / self.global_table_size, 3)
+        self.avg_pkt_rate_addr = round(self.avg_pkt_rate / self.global_table_size, 3)
+        self.avg_byte_rate_addr = round(self.avg_byte_rate / self.global_table_size, 3)
+
         self.controllers = dict()
         self.lock = threading.Lock()
         self.topo = None
         self._setup()
 
     def _setup(self):
-        self.topo = load_topo('topology.json')
+        self.topo = load_topo('../topology.json')        
         # load controllers for all switches
         for p4switch in self.topo.get_p4switches():
             thrift_port = self.topo.get_thrift_port(p4switch)
@@ -84,6 +98,32 @@ class LocalClient:
         monitored_prefixes = self._read_monitored_prefixes(self.monitored_path)
         self.populate_monitored(monitored_prefixes)
         self.add_ports(self.ports)
+        self.set_rates()
+
+    def set_rates(self):
+        # set global rate
+        for controller in self.controllers.values():
+            controller.meter_set_rates('MyIngress.dark_global_meter', 0, [(self.avg_pkt_rate, 100), (self.max_pkt_rate, 100)])
+
+        # only for packet rate for now
+        prefix_max_pkt_rate = math.ceil(self.max_pkt_rate_addr * 256) # per /24
+        prefix_avg_pkt_rate = math.ceil(self.avg_pkt_rate_addr * 256) # per /24
+
+        for controller in self.controllers.values():
+            for i in range(len(self.dark_prefix_index_mapping)):
+                controller.meter_set_rates('MyIngress.dark_meter', i, [(prefix_avg_pkt_rate, 100), (prefix_max_pkt_rate, 100)])
+    
+    def update_rates(self, inactive_pfxs, inactive_addr):
+        addr_avg_pkt_rate = math.ceil(self.avg_pkt_rate / inactive_addr) # per /24
+        addr_max_pkt_rate = math.ceil(self.max_pkt_rate / inactive_addr) # per /24
+
+        for inactive_pfx, in_addr in inactive_pfxs.items():
+            prefix_max_pkt_rate = math.ceil(addr_max_pkt_rate * in_addr) # per /24
+            prefix_avg_pkt_rate = math.ceil(addr_avg_pkt_rate * in_addr) # per /24
+            idx = self.dark_prefix_index_mapping[inactive_pfx]
+
+            for controller in self.controllers.values():
+                controller.meter_set_rates('MyIngress.dark_meter', idx, [(prefix_avg_pkt_rate, 100), (prefix_max_pkt_rate, 100)])
 
     def add_ports(self, ports):
         for port in ports['incoming']:
@@ -95,11 +135,11 @@ class LocalClient:
 
     def populate_monitored(self, entries):
         base_idx = 0
+        dark_base_idx = 0
         for entry in entries:
             length = entry.split('/')[-1]
             for controller in self.controllers.values():
-                controller.table_add('MyIngress.monitored', 'calc_idx', [entry], action_params=[str(base_idx), length])
-            # save in local dictionary
+                controller.table_add('MyIngress.monitored', 'calc_idx', [entry], action_params=[str(base_idx), length, str(dark_base_idx)])            # save in local dictionary
             ipnet = ipaddress.IPv4Network(entry)
             netws = list(ipnet.subnets(new_prefix=32))
             self.index_prefix_mapping.extend(netws)
@@ -108,7 +148,13 @@ class LocalClient:
                 node = self.prefix_index_mapping.add(str(netws[i]))
                 node.data['index'] = base_idx + i
 
+            dark_netws = list(ipnet.subnets(new_prefix=24))
+            for i in range(len(dark_netws)):
+                dark_netw = '.'.join(str(dark_netws[i]).split('.')[:3])
+                self.dark_prefix_index_mapping[dark_netw] = dark_base_idx + i            
+
             base_idx += len(netws)
+            dark_base_idx += len(dark_netws)
 
     def _read_monitored_prefixes(self, path):
         monitored_prefixes = []
@@ -151,41 +197,44 @@ class LocalClient:
         
             return aggregate(inactive_prefixes)
         
-def run(self):
-    pipe = 0
-    while True:
-        logging.info('Starting collecting values...')
-        # collect global table(s)
-        for i in range(len(self.index_prefix_mapping)):
-            active = 0
-            for controller in self.controllers.values():
-                t_val = controller.register_read('MyIngress.flag_table', i)
-                active |= t_val
-            with self.lock:
-                if active:
-                    for controller in self.controllers.values():
-                        if not self.counters[i]:
-                            controller.register_write('MyIngress.global_table', i , 1)
-                        controller.register_write('MyIngress.flag_table', i, 0)
-                    logging.warning(f'Prefix {self.index_prefix_mapping[i]} became active.')
-                    self.counters[i] = self.alpha + 1
-                else:
-                    if self.counters[i] == 1:
+    def run(self):
+        while True:
+            logging.info('Starting collecting values...')
+            # collect global table(s)
+            inactive_pfxs = dict()
+            inactive_addr = 0
+            for i in range(len(self.index_prefix_mapping)):
+                active = 0
+                for controller in self.controllers.values():
+                    t_val = controller.register_read('MyIngress.flag_table', i)
+                    active |= t_val
+                with self.lock:
+                    if active:
                         for controller in self.controllers.values():
-                            controller.register_write('MyIngress.global_table', i, 0)
-                        self.counters[i] = 0
-                    elif self.counters[i] > 1:
-                        self.counters[i] -= 1
+                            if not self.counters[i]:
+                                controller.register_write('MyIngress.global_table', i , 1)
+                            controller.register_write('MyIngress.flag_table', i, 0)
+                        logging.warning(f'Prefix {self.index_prefix_mapping[i]} became active.')
+                        self.counters[i] = self.alpha + 1
+                    else:
+                        if self.counters[i] > 1:
+                            self.counters[i] -= 1
+                        else:
+                            inactive_addr += 1
+                            pfx = ".".join(str(self.index_prefix_mapping[i]).split(".")[:3])
+                            if pfx not in inactive_pfxs:
+                                inactive_pfxs[pfx] = 0
+                            inactive_pfxs[pfx] += 1
 
-        # reset logging state
-        for i in range(self.dark_table_size):
-            for controller in self.controllers.values():
-                num_pkts = controller.register_read('MyIngress.dark_table', i, 0)
-                if num_pkts > THRESHOLD:
-                    controller.register_write('MyIngress.dark_table', i, 0)
+                            if self.counters[i] == 1:
+                                for controller in self.controllers.values():
+                                    controller.register_write('MyIngress.global_table', i, 0)
+                                self.counters[i] = 0
 
-        logging.info(f'Waiting for {self.alpha} mins...')
-        time.sleep(self.time_interval)
+            self.update_rates(inactive_pfxs, inactive_addr)
+
+            logging.info(f'Waiting for {self.time_interval/60} mins...')
+            time.sleep(self.time_interval)
 
 
 '''
@@ -200,7 +249,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--interval', default=3, type=int)
     parser.add_argument('--global-table-size', default=4194304, type=int)
-    parser.add_argument('--dark-table-size', default=1024, type=int)
+    parser.add_argument('--dark-meter-size', default=16384, type=int)
+    parser.add_argument('--max-packet-rate', default=1174405, type=int)
+    parser.add_argument('--avg-packet-rate', default=343933, type=int)
+    parser.add_argument('--max-byte-rate', default=338102845, type=int)
+    parser.add_argument('--avg-byte-rate', default=17758683, type=int)
     parser.add_argument('--alpha', default=1, type=int)
     parser.add_argument('-s', '--setup', default=True, type=bool)
     parser.add_argument('--monitored', default='../input_files/monitored.txt', type=str)
@@ -209,7 +262,8 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    client = LocalClient(args.interval, args.global_table_size, args.dark_table_size, args. alpha, args.monitored, {'incoming': args.incoming, 'outgoing': args.outgoing})
+    controller = LocalClient(args.interval, args.global_table_size, args.dark_meter_size, args. alpha, args.monitored, {'incoming': args.incoming, 'outgoing': args.outgoing},\
+         args.max_packet_rate, args.max_byte_rate, args.avg_packet_rate, args.avg_byte_rate)    
     if args.setup:
         client.run()
 

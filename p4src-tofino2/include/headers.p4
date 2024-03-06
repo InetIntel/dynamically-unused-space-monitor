@@ -87,6 +87,7 @@ struct my_ingress_metadata_t {
     ipv4_addr_t addr;
     bit<21> idx;
     bit<21> offset;
+    bit<14> dark_idx;
     bit<1> incoming;
     bit<1> outgoing;
     bit<1> ignore;

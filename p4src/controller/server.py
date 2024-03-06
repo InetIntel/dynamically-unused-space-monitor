@@ -106,7 +106,11 @@ if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument('--interval', default=3, type=int)
     parser.add_argument('--global-table-size', default=4194304, type=int)
-    parser.add_argument('--dark-table-size', default=1024, type=int)
+    parser.add_argument('--dark-meter-size', default=16384, type=int)
+    parser.add_argument('--max-packet-rate', default=1174405, type=int)
+    parser.add_argument('--avg-packet-rate', default=343933, type=int)
+    parser.add_argument('--max-byte-rate', default=338102845, type=int)
+    parser.add_argument('--avg-byte-rate', default=17758683, type=int)    
     parser.add_argument('--alpha', default=1, type=int)
     parser.add_argument('--monitored', default='../input_files/monitored.txt', type=str)
     parser.add_argument('--outgoing', nargs='*', default=[1], type=int)
@@ -118,7 +122,8 @@ if __name__ == '__main__':
     host_ip = socket.gethostbyname(host_name)
     port = 2002
 
-    controller = LocalClient(args.interval, args.global_table_size, args.dark_table_size, args. alpha, args.monitored, {'incoming': args.incoming, 'outgoing': args.outgoing})
+    controller = LocalClient(args.interval, args.global_table_size, args.dark_meter_size, args. alpha, args.monitored, {'incoming': args.incoming, 'outgoing': args.outgoing},\
+                            args.max_packet_rate, args.max_byte_rate, args.avg_packet_rate, args.avg_byte_rate)     
     # run iterations in the background
     thread = threading.Thread(target=controller.run, name='periodic checks')
     thread.start()

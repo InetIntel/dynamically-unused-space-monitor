@@ -96,6 +96,7 @@ header ctl_t{
 struct metadata {
     bit<32> addr;
     bit<22> idx;
+    bit<14> dark_idx;
     bit<1> incoming;
     bit<1> outgoing;
     bit<1> ignore;

@@ -114,10 +114,12 @@ control Ingress(
         }
         size = 1024;
         default_action = NoAction();
-    }    
-    action calc_idx(bit<GLOBAL_TABLE_INDEX_WIDTH> base_idx, bit<22> mask) {
-            meta.offset = ((bit<22>) meta.addr) & mask; //assuming /10
+    }
+
+    action calc_idx(bit<GLOBAL_TABLE_INDEX_WIDTH> base_idx, bit<22> mask, bit<DARK_TABLE_INDEX_WIDTH> dark_base_idx) {
+            meta.offset = ((bit<22>) meta.addr) & mask; //assuming /10            
             meta.idx = base_idx;
+            meta.dark_idx = dark_base_idx;
     }
     
 
@@ -158,20 +160,6 @@ control Ingress(
         default_action = NoAction();
     }
 
-    Register<bit<16>, dark_reg_index_t>(DARK_TABLE_ENTRIES, 0) dark_table;
-    RegisterAction<bit<16>, dark_reg_index_t, bit<16>>(dark_table)
-    read_update_dark_table = {
-        void apply(inout bit<16> value, out bit<16> rv) {
-            rv = value;
-            if (value == 2047) { 
-                value = COUNTER_THRESHOLD;
-            }
-            else {
-                value = value + 1;
-            }
-        }
-    };
-
     Register<bit<1>, global_reg_index_t>(GLOBAL_TABLE_ENTRIES, 0) flag_table;
     RegisterAction<bit<1>, global_reg_index_t, bit<1>>(flag_table)
     read_update_flag_table = {
@@ -203,7 +191,8 @@ control Ingress(
         }
     };
 
-    Hash<bit<10>>(HashAlgorithm_t.CRC16) hash_0;
+    Meter<bit<1>>(1, MeterType_t.PACKETS) dark_global_meter;
+    Meter<bit<14>>(DARK_TABLE_ENTRIES, MeterType_t.PACKETS) dark_meter;
 
     apply {
         if (hdr.ipv4.isValid()){
@@ -236,28 +225,17 @@ control Ingress(
                     t_value = read_flag_table.execute(meta.idx);
 
                     if (g_value == 0 && t_value == 0){
-                        bit<16> d_value;
-                        bit<32> dstIP = hdr.ipv4.dst_addr; // >> 8; // configurable
-                        bit<10> h_idx;
-                        h_idx = hash_0.get({dstIP});
-                        d_value = read_update_dark_table.execute(h_idx);
-                        // meta.ignore = 1; // forward it or not? answ: up to the netw operators
-                        if (d_value < (bit<16>) COUNTER_THRESHOLD){
+                        bit<8> global_color;
+                        bit<8> color;
+
+                        meta.dark_idx = meta.dark_idx + (bit<DARK_TABLE_INDEX_WIDTH>) (meta.offset >> 8);
+                        global_color = dark_global_meter.execute(0);
+                        color = dark_meter.execute(meta.dark_idx);
+                        // only if green, mirror it
+                        if (global_color == 0 && color == 0){
                             meta.mirror_header_type = HEADER_MIRROR;
-                            ig_dprsr_md.mirror_type = 2; // mirror pkt to be logged
+                            ig_dprsr_md.mirror_type = 2;
                             meta.mirror_session = (MirrorId_t) 3;
-                            // set_port((PortId_t) LOG_PORT); // ASSUME WE HAVE CONNECTED A MACHINE TO LOG THESE PKTS
-                        }
-                        else{
-                            if ((d_value & (bit<16>)(RATE_LIMIT-1)) == 0){ // mod RATE_LIMIT
-                                meta.mirror_header_type = HEADER_MIRROR;
-                                ig_dprsr_md.mirror_type = 2; // mirror pkt to be logged
-                                meta.mirror_session = (MirrorId_t) 3;
-                                // set_port((PortId_t) LOG_PORT);                                    
-                            }
-                            else {
-                                //drop_exit_ingress(); // forward it or not? answ: up to the netw operators
-                            }
                         }
                     }
                 }

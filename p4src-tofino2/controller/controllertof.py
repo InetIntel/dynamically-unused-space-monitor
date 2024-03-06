@@ -61,18 +61,31 @@ import argparse, time, ipaddress
 from aggregate6 import aggregate
 from radix import Radix
 import threading
+import math
 
 class LocalClient:
-    def __init__(self, time_interval, global_table_size, dark_table_size, alpha, monitored_path, ports):
+    def __init__(self, time_interval, global_table_size, dark_meter_size, alpha, monitored_path, ports,\
+                max_pkt_rate, max_byte_rate, avg_pkt_rate, avg_byte_rate):         
         self.time_interval = time_interval*60 # convert to sec
         self.global_table_size = global_table_size
-        self.dark_table_size = dark_table_size
+        self.dark_prefix_index_mapping = dict()
         self.alpha = alpha
         self.counters = [self.alpha]*(self.global_table_size*2)
         self.monitored_path = monitored_path
         self.index_prefix_mapping = []
         self.prefix_index_mapping = Radix()
         self.ports = ports
+
+        self.max_pkt_rate = max_pkt_rate
+        self.max_byte_rate = max_byte_rate
+        self.avg_pkt_rate = avg_pkt_rate
+        self.avg_byte_rate = avg_byte_rate
+        # max pkt rate per address
+        self.max_pkt_rate_addr = round(self.max_pkt_rate / self.global_table_size, 3)
+        self.max_byte_rate_addr = round(self.max_byte_rate / self.global_table_size, 3)
+        self.avg_pkt_rate_addr = round(self.avg_pkt_rate / self.global_table_size, 3)
+        self.avg_byte_rate_addr = round(self.avg_byte_rate / self.global_table_size, 3)
+
         self.lock = threading.Lock()
         self._setup()
 
@@ -105,13 +118,70 @@ class LocalClient:
         self.flag_table0 = self.bfrt_info.table_get('pipe.Ingress.flag_table0')
         self.global_table1 = self.bfrt_info.table_get('pipe.Ingress.global_table1')
         self.flag_table1 = self.bfrt_info.table_get('pipe.Ingress.flag_table1')
-        self.dark_table = self.bfrt_info.table_get('pipe.Ingress.dark_table')
+        self.dark_meter = self.bfrt_info.table_get('pipe.Ingress.dark_meter')
+        self.dark_global_meter = self.bfrt_info.table_get('pipe.Ingress.dark_global_meter')
         self.interface.bind_pipeline_config(self.bfrt_info.p4_name_get())
         self.add_mirroring([10, 10, 11], 1, 2)
         monitored_prefixes = self.parse_monitored(self.monitored_path)
         self.populate_monitored(monitored_prefixes)
         self.add_ports(self.ports)
+        self.set_rates()
 
+    def set_rates(self):
+        # set global rate
+        print(self.max_pkt_rate)
+        _key = self.dark_global_meter.make_key([gc.KeyTuple('$METER_INDEX', 0)])
+        _data = self.dark_global_meter.make_data(
+            [gc.DataTuple('$METER_SPEC_CIR_PPS', self.avg_pkt_rate),
+             gc.DataTuple('$METER_SPEC_PIR_PPS', self.max_pkt_rate),
+             gc.DataTuple('$METER_SPEC_CBS_PKTS', 100),
+             gc.DataTuple('$METER_SPEC_PBS_PKTS', 100)])
+        try:
+                self.dark_global_meter.entry_add(self.dev_tgt, [_key], [_data])
+        except:
+            pass
+
+        # only for packet rate for now
+        prefix_max_pkt_rate = math.ceil(self.max_pkt_rate_addr * 256) # per /24
+        prefix_avg_pkt_rate = math.ceil(self.avg_pkt_rate_addr * 256) # per /24
+
+        key_field_list = []
+        data_field_list = []
+        for i in range(len(self.dark_prefix_index_mapping)):
+            # set rate for /24
+            key_field_list.append(self.dark_meter.make_key([gc.KeyTuple('$METER_INDEX', i)]))
+            data_field_list.append(self.dark_meter.make_data(
+            [gc.DataTuple('$METER_SPEC_CIR_PPS', prefix_avg_pkt_rate),
+             gc.DataTuple('$METER_SPEC_PIR_PPS', prefix_max_pkt_rate),
+             gc.DataTuple('$METER_SPEC_CBS_PKTS', 100),
+             gc.DataTuple('$METER_SPEC_PBS_PKTS', 100)]))
+        try:
+            self.dark_meter.entry_add(self.dev_tgt, key_field_list, data_field_list)
+        except:
+            pass
+
+    def update_rates(self, inactive_pfxs, inactive_addr):
+        addr_avg_pkt_rate = math.ceil(self.avg_pkt_rate / inactive_addr) # per /24
+        addr_max_pkt_rate = math.ceil(self.max_pkt_rate / inactive_addr) # per /24
+
+        key_field_list = []
+        data_field_list = []
+        for inactive_pfx, in_addr in inactive_pfxs.items():
+            prefix_max_pkt_rate = math.ceil(addr_max_pkt_rate * in_addr) # per /24
+            prefix_avg_pkt_rate = math.ceil(addr_avg_pkt_rate * in_addr) # per /24
+
+            idx = self.dark_prefix_index_mapping[inactive_pfx]
+            key_field_list.append(self.dark_meter.make_key([gc.KeyTuple('$METER_INDEX', idx)]))
+            data_field_list.append(self.dark_meter.make_data(
+            [gc.DataTuple('$METER_SPEC_CIR_PPS', prefix_avg_pkt_rate),
+             gc.DataTuple('$METER_SPEC_PIR_PPS', prefix_max_pkt_rate),
+             gc.DataTuple('$METER_SPEC_CBS_PKTS', 100),
+             gc.DataTuple('$METER_SPEC_PBS_PKTS', 100)]))
+
+        try:
+            self.dark_meter.entry_add(self.dev_tgt, key_field_list, data_field_list)
+        except:
+            pass
 
     def add_ports(self, ports):
         # incoming
@@ -137,13 +207,15 @@ class LocalClient:
 
     def populate_monitored(self, entries):
         base_idx = 0
+        dark_base_idx = 0
         for entry in entries:
             prefix, length = entry.split('/')
             mask = 2**(31 - int(length)) - 1
             _keys = self.monitored_table.make_key([gc.KeyTuple('meta.addr', prefix, None, int(length))])
             _data = self.monitored_table.make_data([
                 gc.DataTuple('base_idx', base_idx),
-                gc.DataTuple('mask', mask)
+                gc.DataTuple('mask', mask),
+                gc.DataTuple('dark_base_idx', dark_base_idx)
                 ], 'Ingress.calc_idx')
             try:
                 self.monitored_table.entry_add(self.dev_tgt, [_keys], [_data])
@@ -158,6 +230,13 @@ class LocalClient:
                 node = self.prefix_index_mapping.add(str(netws[i]))
                 node.data['index'] = 2*base_idx + i
             base_idx += len(netws) / 2
+
+            dark_netws = list(ipnet.subnets(new_prefix=24))
+            for i in range(len(dark_netws)):
+                dark_netw = '.'.join(str(dark_netws[i]).split('.')[:3])
+                self.dark_prefix_index_mapping[dark_netw] = dark_base_idx + i            
+
+            dark_base_idx += len(dark_netws)
 
     def add_mirroring(self, eg_ports, mc_session_id, log_session_id):
         mirror_table = self.bfrt_info.table_get('$mirror.cfg')
@@ -309,10 +388,11 @@ class LocalClient:
         return aggregate(inactive_prefixes)
 
     def run(self):
-        pipe = 0
         while True:
             logging.info('Starting collecting values...')
             # collect global table(s)
+            inactive_pfxs = dict()
+            inactive_addr = 0
             for i in range(len(self.index_prefix_mapping)):
                 active = 0
 
@@ -329,18 +409,21 @@ class LocalClient:
                         self.write_register(flag_table, int(i/2), 0)
                         self.counters[i] = self.alpha + 1
                     else:
-                        if self.counters[i] == 1:
-                            self.write_register(global_table, int(i/2), 0)
-                            self.counters[i] = 0
-                        elif self.counters[i] > 1:
+                        if self.counters[i] > 1:
                             self.counters[i] -= 1
-            # reset logging state                
-            for i in range(self.dark_table_size):
-                num_pkts = self.read_register(self.dark_table, i)
-                if sum(num_pkts) > THRESHOLD:
-                    self.write_register(self.dark_table, i, 0)
+                        else:
+                            inactive_addr += 1
+                            pfx = ".".join(str(self.index_prefix_mapping[i]).split(".")[:3])
+                            if pfx not in inactive_pfxs:
+                                inactive_pfxs[pfx] = 0
+                            inactive_pfxs[pfx] += 1
 
-                    
+                            if self.counters[i] == 1:
+                                self.write_register(global_table, int(i/2), 0)
+                                self.counters[i] = 0
+
+            self.update_rates(inactive_pfxs, inactive_addr)
+     
             logging.info(f'Waiting for {self.time_interval} secs...')
             time.sleep(self.time_interval)
 
@@ -356,7 +439,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--interval', default=3, type=int)
     parser.add_argument('--global-table-size', default=2097152, type=int)
-    parser.add_argument('--dark-table-size', default=1024, type=int)
+    parser.add_argument('--dark-meter-size', default=16384, type=int)
+    parser.add_argument('--max-packet-rate', default=1, type=int)
+    parser.add_argument('--max-byte-rate', default=1, type=int)
+    parser.add_argument('--avg-byte-rate', default=1, type=int)
+    parser.add_argument('--avg-packet-rate', default=1, type=int)
     parser.add_argument('--alpha', default=1, type=int)
     parser.add_argument('-s', '--setup', default=True, type=bool)
     parser.add_argument('--monitored', default='../input_files/monitored.txt', type=str)
@@ -366,7 +453,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
 
-    client = LocalClient(args.interval, args.global_table_size, args.dark_table_size, args. alpha, args.monitored, {'incoming': args.incoming, 'outgoing': args.outgoing})
+    client = LocalClient(args.interval, args.global_table_size, args.dark_meter_size, args. alpha, args.monitored, {'incoming': args.incoming, 'outgoing': args.outgoing}, \
+        args.max_packet_rate, args.max_byte_rate, args.avg_packet_rate, args.avg_byte_rate)    
     client.get_gen_info()
     if args.setup:
         client.run()
