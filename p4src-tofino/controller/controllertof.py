@@ -404,11 +404,7 @@ class LocalClient:
                                 self.write_register(self.global_table, i, 0)
                                 self.counters[i] = 0
 
-            # reset logging state
-            for i in range(self.dark_table_size):
-                num_pkts = self.read_register(self.dark_table, i)
-                if sum(num_pkts) > THRESHOLD:
-                    self.write_register(self.dark_table, i, 0)
+            self.update_rates(inactive_pfxs, inactive_addr)
 
             logging.info(f'Waiting for {self.time_interval} seconds...')
             time.sleep(self.time_interval)
