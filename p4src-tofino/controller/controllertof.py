@@ -37,6 +37,7 @@ import sys
 import pdb
 import logging
 import math
+import time
 
 SDE_INSTALL   = os.environ['SDE_INSTALL']
 
@@ -102,7 +103,7 @@ class LocalClient:
         bfrt_client_id = 0
 
         self.interface = gc.ClientInterface(
-            grpc_addr = 'localhost:50052', # 130.207.238.85
+            grpc_addr = 'localhost:50052', # or specific IP
             client_id = bfrt_client_id,
             device_id = 0,
             num_tries = 1)
@@ -340,23 +341,25 @@ class LocalClient:
         headers = ['Full Table Name','Type','Usage','Capacity']
         return data, headers
 
-    def read_register(self, table, index, flags={"from_hw": True}):
-        _keys = table.make_key([gc.KeyTuple("$REGISTER_INDEX", index)])
-        data, _ = next(table.entry_get(
-            self.dev_tgt,
-            [
-                _keys
-            ],
-            flags=flags
-        ))
+    def read_register(self, table, index_range, flags={"from_hw": False}):
+        _keys = [table.make_key([gc.KeyTuple("$REGISTER_INDEX", index)]) for index in index_range]
         data_name = table.info.data_dict_allname["f1"]
-        return data.to_dict()[data_name]
+        results = []
+        for entry in table.entry_get(self.dev_tgt, _keys, flags=flags):
+            data = entry[0].to_dict()
+            results.append(data[data_name])
 
-    def write_register(self, table, index, value, flags={"from_hw": True}):
-        _keys = table.make_key([gc.KeyTuple("$REGISTER_INDEX", index)])
+        return results
+
+    def write_register(self, table, keys_1, keys_0):
+        _keys = [table.make_key([gc.KeyTuple("$REGISTER_INDEX", index)]) for index in keys_1]
+        _keys.extend([table.make_key([gc.KeyTuple("$REGISTER_INDEX", index)]) for index in keys_0])
+
         data_name = table.info.data_dict_allname["f1"]
-        _data = table.make_data([gc.DataTuple(data_name, value)])
-        table.entry_add(self.dev_tgt, [_keys], [_data])
+        _data = [table.make_data([gc.DataTuple(data_name, 1)])]*len(keys_1)
+        _data.extend([table.make_data([gc.DataTuple(data_name, 0)])]*len(keys_0))
+
+        table.entry_add(self.dev_tgt, _keys, _data)
 
     def get_inactive_prefixes(self, covering_prefix=None):
         inactive_prefixes = []
@@ -379,16 +382,79 @@ class LocalClient:
             # collect global table(s)
             inactive_pfxs = dict()
             inactive_addr = 0
-            for i in range(len(self.index_prefix_mapping)):
+            
+            # sync software shadow with hardware
+            self.flag_table.operations_execute(self.dev_tgt, 'Sync')
+            print('sync done')
+
+            # read in batches of 100k entries
+            """
+            RANGE = 100000
+            prev_j = 0
+            iter_time = time.time()
+            for j in range(RANGE, len(self.index_prefix_mapping), RANGE):
+                start_time = time.time()
+                print('start reading', j)
+                flags = self.read_register(self.flag_table, range(prev_j, j))
+                print('read flags', j)
+                global_indices = []
+                flag_indices = []
+                inactive_indices = []
+                for i in range(prev_j, j):
+                    active = 0
+                    t_val = flags[i - prev_j]
+                    active |= int(any(t_val))
+                    with self.lock:
+                        if active:
+                            if not self.counters[i]:
+                                global_indices.append(i)
+                                # self.write_register(self.global_table, i , 1)
+                                logging.warning(f'Prefix {self.index_prefix_mapping[i]} became active.')
+                            #self.write_register(self.flag_table, i, 0)
+                            flag_indices.append(i)
+                            self.counters[i] = self.alpha + 1
+                        else:
+                            if self.counters[i] > 1:
+                                self.counters[i] -= 1
+                            else:
+                                inactive_addr += 1
+                                pfx = ".".join(str(self.index_prefix_mapping[i]).split(".")[:3])
+                                if pfx not in inactive_pfxs:
+                                    inactive_pfxs[pfx] = 0
+                                inactive_pfxs[pfx] += 1
+
+                                if self.counters[i] == 1:
+                                    #self.write_register(self.global_table, i, 0)
+                                    inactive_indices.append(i)
+                                    self.counters[i] = 0
+                prev_j = j                    
+                # update registers
+                print('start writing')
+                self.write_register(self.global_table, global_indices, inactive_indices)
+                self.write_register(self.flag_table, [], flag_indices)
+                print('end writing')
+                print(j, time.time() - start_time)
+            """
+            iter_time = time.time()
+            print('start reading')
+            flags = self.read_register(self.flag_table, [])
+            print(time.time() - iter_time, "read flag")
+                
+            global_indices = []
+            flag_indices = []
+            inactive_indices = []
+            for i in range(len(flags)):
                 active = 0
-                t_val = self.read_register(self.flag_table, i)
+                t_val = flags[i]
                 active |= int(any(t_val))
                 with self.lock:
                     if active:
                         if not self.counters[i]:
-                            self.write_register(self.global_table, i , 1)
+                            global_indices.append(i)
+                            # self.write_register(self.global_table, i , 1)
                             logging.warning(f'Prefix {self.index_prefix_mapping[i]} became active.')
-                        self.write_register(self.flag_table, i, 0)
+                        #self.write_register(self.flag_table, i, 0)
+                        flag_indices.append(i)
                         self.counters[i] = self.alpha + 1
                     else:
                         if self.counters[i] > 1:
@@ -401,14 +467,19 @@ class LocalClient:
                             inactive_pfxs[pfx] += 1
 
                             if self.counters[i] == 1:
-                                self.write_register(self.global_table, i, 0)
+                                #self.write_register(self.global_table, i, 0)
+                                inactive_indices.append(i)
                                 self.counters[i] = 0
+            print('start writing')
+            self.write_register(self.global_table, global_indices, inactive_indices)
+            self.write_register(self.flag_table, [], flag_indices)
+            print('end writing')
 
-            # reset logging state
-            for i in range(self.dark_table_size):
-                num_pkts = self.read_register(self.dark_table, i)
-                if sum(num_pkts) > THRESHOLD:
-                    self.write_register(self.dark_table, i, 0)
+            print('all:', time.time() - iter_time)
+
+            self.update_rates(inactive_pfxs, inactive_addr)
+            
+            print('finished rates')
 
             logging.info(f'Waiting for {self.time_interval} seconds...')
             time.sleep(self.time_interval)
