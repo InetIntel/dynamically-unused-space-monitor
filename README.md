@@ -1,4 +1,4 @@
-# MORP4:A Dynamic Network Telescope
+# MORP4:Monitoring active network space dynamically
 
 A _network telescope_ passively monitors traffic reaching Internet
 address space that is not assigned to any hosts but is advertised to
